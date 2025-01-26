@@ -14,9 +14,15 @@ const AdminPanel = () => {
   const [books, setBooks] = useState<Book[]>([])
   const [form] = Form.useForm()
 
+  /**
+   * 获取所有图书信息
+   * @description 从后端API获取图书列表数据
+   * @returns {Promise<void>}
+   * @throws {Error} 当API请求失败时抛出错误
+   */
   const fetchBooks = async () => {
     try {
-      const response = await fetch('http://localhost:8080/books')
+      const response = await fetch('http://localhost:8080/books')  // 使用的是 get 方法
       const data = await response.json()
       setBooks(data)
     } catch (error) {

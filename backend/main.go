@@ -38,6 +38,14 @@ func main() {
 
 	// 创建Gin路由
 	r := gin.Default()
+	// gin.Default() 是 Gin 框架提供的一个默认配置，它包含了一些常用的中间件，如日志记录、请求解析、响应渲染等。
+	// 打印日志
+	r.Use(gin.Logger())
+	// 恢复，用于在发生 panic 时恢复应用程序的运行。 panic 是 Go 语言中的一种错误处理机制，当发生不可恢复的错误时，程序会抛出 panic 并终止运行。
+	r.Use(gin.Recovery())
+	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		return "请求信息：" + param.Method + " " + param.Path + "\n"
+	})) // 打印请求信息到控制台，可以根据需要自定义日志格式
 
 	// 配置CORS
 	r.Use(cors.Default())
@@ -85,6 +93,8 @@ func main() {
 
 			if existingBook.Stock < book.Stock {
 				c.JSON(400, gin.H{"error": "库存不足"})
+				// gin.H 用于构建 JSON 响应，它是一个 map[string]any 类型的别名。
+				// 400 意思是请求错误，通常是客户端发送的请求不符合服务器的要求。
 				return
 			}
 
