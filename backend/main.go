@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -9,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Book 图书模型
@@ -48,12 +51,24 @@ func main() {
 	// 自动迁移数据库结构
 	db.AutoMigrate(&Book{}, &Order{}, &User{})
 
+	// 创建日志文件
+	logFile, err := os.OpenFile("access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		panic(fmt.Sprintf("无法创建日志文件: %v", err))
+	}
+
 	// 创建Gin路由
 	r := gin.Default()
-	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
+	r.Use(gin.LoggerWithWriter(logFile))
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
-		return "请求信息：" + param.Method + " " + param.Path + "\n"
+		return fmt.Sprintf("%s | %s | %s | %d | %v\n",
+			param.TimeStamp.Format("2006-01-02 15:04:05"),
+			param.Method,
+			param.Path,
+			param.StatusCode,
+			param.Latency,
+		)
 	}))
 
 	// 配置CORS
@@ -213,25 +228,51 @@ func main() {
 			return
 		}
 
-		// 检查库存
+		// 使用事务来确保数据一致性
+		tx := db.Begin()
+		defer func() {
+			if r := recover(); r != nil {
+				tx.Rollback()
+			}
+		}()
+
+		// 在事务中使用悲观锁检查库存
 		var book Book
-		result := db.First(&book, order.BookID)
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&book, order.BookID)
 		if result.Error != nil {
+			tx.Rollback()
 			c.JSON(404, gin.H{"error": "图书不存在"})
 			return
 		}
 
+		// 确保库存充足
 		if book.Stock < order.Quantity {
+			tx.Rollback()
 			c.JSON(400, gin.H{"error": "库存不足"})
 			return
 		}
 
 		// 更新库存
 		book.Stock -= order.Quantity
-		db.Save(&book)
+		if err := tx.Save(&book).Error; err != nil {
+			tx.Rollback()
+			c.JSON(500, gin.H{"error": "更新库存失败"})
+			return
+		}
 
 		// 创建订单
-		db.Create(&order)
+		if err := tx.Create(&order).Error; err != nil {
+			tx.Rollback()
+			c.JSON(500, gin.H{"error": "创建订单失败"})
+			return
+		}
+
+		// 提交事务
+		if err := tx.Commit().Error; err != nil {
+			tx.Rollback()
+			c.JSON(500, gin.H{"error": "提交事务失败"})
+			return
+		}
 
 		c.JSON(200, gin.H{"message": "订单创建成功"})
 	})
