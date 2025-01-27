@@ -1,8 +1,12 @@
 package main
 
 import (
+	"math/rand"
+	"time"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -23,7 +27,15 @@ type Order struct {
 	Quantity int  `json:"quantity"`
 }
 
+// User 用户模型
+type User struct {
+	gorm.Model
+	Username string `json:"username" gorm:"unique"`
+	Password string `json:"password"`
+}
+
 var db *gorm.DB
+var jwtKey = []byte("your-secret-key") // 在实际应用中应该使用环境变量
 
 func main() {
 	// 初始化数据库
@@ -34,25 +46,107 @@ func main() {
 	}
 
 	// 自动迁移数据库结构
-	db.AutoMigrate(&Book{}, &Order{})
+	db.AutoMigrate(&Book{}, &Order{}, &User{})
 
 	// 创建Gin路由
 	r := gin.Default()
-	// gin.Default() 是 Gin 框架提供的一个默认配置，它包含了一些常用的中间件，如日志记录、请求解析、响应渲染等。
-	// 打印日志
 	r.Use(gin.Logger())
-	// 恢复，用于在发生 panic 时恢复应用程序的运行。 panic 是 Go 语言中的一种错误处理机制，当发生不可恢复的错误时，程序会抛出 panic 并终止运行。
 	r.Use(gin.Recovery())
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return "请求信息：" + param.Method + " " + param.Path + "\n"
-	})) // 打印请求信息到控制台，可以根据需要自定义日志格式
+	}))
 
 	// 配置CORS
 	r.Use(cors.Default())
 
+	// 初始化root账号
+	var rootUser User
+	result := db.Where("username = ?", "root").First(&rootUser)
+	if result.Error != nil {
+		// 如果root用户不存在，创建一个新的root用户
+		rootUser = User{
+			Username: "root",
+			Password: "root",
+		}
+		db.Create(&rootUser)
+	}
+
+	// 注册API
+	r.POST("/api/register", func(c *gin.Context) {
+		var newUser User
+		if err := c.ShouldBindJSON(&newUser); err != nil {
+			c.JSON(400, gin.H{"error": "无效的请求数据"})
+			return
+		}
+		// 检查用户名是否已存在
+		var existingUser User
+		result := db.Where("username =?", newUser.Username).First(&existingUser)
+		if result.Error == nil {
+			c.JSON(400, gin.H{"error": "用户名已存在"})
+			return
+		}
+		// 创建新用户
+		db.Create(&newUser)
+		c.JSON(201, gin.H{"message": "注册成功"})
+	})
+
+	// 登录API
+	r.POST("/api/login", func(c *gin.Context) {
+		var loginUser User
+		if err := c.ShouldBindJSON(&loginUser); err != nil {
+			// ShouldBindJSON 用于解析请求体中的JSON数据到 loginUser 结构体中
+			c.JSON(400, gin.H{"error": "无效的请求数据"})
+			return
+		}
+
+		var user User
+		result := db.Where("username = ?", loginUser.Username).First(&user)
+		if result.Error != nil || user.Password != loginUser.Password {
+			c.JSON(401, gin.H{"error": "用户名或密码错误"})
+			return
+		}
+
+		// 创建JWT令牌
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"username": user.Username,
+			"exp":      time.Now().Add(time.Hour * 24).Unix(),
+		})
+
+		tokenString, err := token.SignedString(jwtKey)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "生成令牌失败"})
+			return
+		}
+
+		c.JSON(200, gin.H{"token": tokenString})
+	})
+
 	// 管理员API
 	admin := r.Group("/admin")
 	{
+		// 重置图书数据
+		admin.POST("/reset-books", func(c *gin.Context) {
+			// 删除所有现有图书
+			db.Session(&gorm.Session{AllowGlobalUpdate: true}).Unscoped().Delete(&Book{})
+
+			// 预设的图书数据
+			initialBooks := []Book{
+				{Title: "百年孤独", Author: "加西亚·马尔克斯", Price: float64(30+rand.Intn(121)) + float64(rand.Intn(100))/100, Stock: 50 + rand.Intn(151)},
+				{Title: "鲁迅全集", Author: "鲁迅", Price: float64(30+rand.Intn(121)) + float64(rand.Intn(100))/100, Stock: 50 + rand.Intn(151)},
+				{Title: "毛泽东选集", Author: "毛泽东", Price: float64(30+rand.Intn(121)) + float64(rand.Intn(100))/100, Stock: 50 + rand.Intn(151)},
+				{Title: "白夜行", Author: "东野圭吾", Price: float64(30+rand.Intn(121)) + float64(rand.Intn(100))/100, Stock: 50 + rand.Intn(151)},
+				{Title: "Norwegian Wood", Author: "村上春树", Price: float64(30+rand.Intn(121)) + float64(rand.Intn(100))/100, Stock: 50 + rand.Intn(151)},
+				{Title: "The Old Man and the Sea", Author: "海明威", Price: float64(30+rand.Intn(121)) + float64(rand.Intn(100))/100, Stock: 50 + rand.Intn(151)},
+			}
+
+			// 创建新的图书记录
+			for _, book := range initialBooks {
+				db.Create(&book)
+			}
+
+			c.JSON(200, gin.H{"message": "图书数据已重置"})
+		})
+
 		// 增加库存
 		admin.POST("/stock/add", func(c *gin.Context) {
 			var book Book
@@ -93,8 +187,6 @@ func main() {
 
 			if existingBook.Stock < book.Stock {
 				c.JSON(400, gin.H{"error": "库存不足"})
-				// gin.H 用于构建 JSON 响应，它是一个 map[string]any 类型的别名。
-				// 400 意思是请求错误，通常是客户端发送的请求不符合服务器的要求。
 				return
 			}
 

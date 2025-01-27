@@ -88,6 +88,30 @@ const AdminPanel = () => {
   return (
     <div style={{ padding: '20px' }}>
       <h2>图书库存管理</h2>
+      <div style={{ marginBottom: '20px' }}>
+        <Button
+          type="primary"
+          danger
+          onClick={async () => {
+            try {
+              const response = await fetch('http://localhost:8080/admin/reset-books', {
+                method: 'POST',
+              })
+              if (response.ok) {
+                message.success('图书数据已重置')
+                fetchBooks()
+              } else {
+                message.error('重置数据失败')
+              }
+            } catch (error) {
+              message.error('操作失败')
+            }
+          }}
+          style={{ marginRight: '16px' }}
+        >
+          重置图书数据
+        </Button>
+      </div>
       <Form
         form={form}
         name="bookForm"
