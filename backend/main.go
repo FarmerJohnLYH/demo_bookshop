@@ -170,16 +170,47 @@ func main() {
 				return
 			}
 
-			// 检查图书是否存在
+			if book.Stock <= 0 {
+				c.JSON(400, gin.H{"error": "库存增加量必须为正数"})
+				return
+			}
+
+			// 使用事务和乐观锁处理库存更新
+			tx := db.Begin()
+			defer func() {
+				if r := recover(); r != nil {
+					tx.Rollback()
+				}
+			}()
+
 			var existingBook Book
-			result := db.First(&existingBook, book.ID)
+			result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existingBook, book.ID)
 			if result.Error != nil {
 				// 如果图书不存在，创建新图书
-				db.Create(&book)
+				if err := tx.Create(&book).Error; err != nil {
+					tx.Rollback()
+					c.JSON(500, gin.H{"error": "创建图书失败"})
+					return
+				}
 			} else {
 				// 如果图书存在，更新库存
 				existingBook.Stock += book.Stock
-				db.Save(&existingBook)
+				if existingBook.Stock < 0 { // 防止整数溢出
+					tx.Rollback()
+					c.JSON(400, gin.H{"error": "库存数量超出范围"})
+					return
+				}
+				if err := tx.Save(&existingBook).Error; err != nil {
+					tx.Rollback()
+					c.JSON(500, gin.H{"error": "更新库存失败"})
+					return
+				}
+			}
+
+			if err := tx.Commit().Error; err != nil {
+				tx.Rollback()
+				c.JSON(500, gin.H{"error": "提交事务失败"})
+				return
 			}
 
 			c.JSON(200, gin.H{"message": "库存更新成功"})
@@ -193,20 +224,45 @@ func main() {
 				return
 			}
 
+			if book.Stock <= 0 {
+				c.JSON(400, gin.H{"error": "库存减少量必须为正数"})
+				return
+			}
+
+			// 使用事务和乐观锁处理库存更新
+			tx := db.Begin()
+			defer func() {
+				if r := recover(); r != nil {
+					tx.Rollback()
+				}
+			}()
+
 			var existingBook Book
-			result := db.First(&existingBook, book.ID)
+			result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existingBook, book.ID)
 			if result.Error != nil {
+				tx.Rollback()
 				c.JSON(404, gin.H{"error": "图书不存在"})
 				return
 			}
 
 			if existingBook.Stock < book.Stock {
+				tx.Rollback()
 				c.JSON(400, gin.H{"error": "库存不足"})
 				return
 			}
 
 			existingBook.Stock -= book.Stock
-			db.Save(&existingBook)
+			if err := tx.Save(&existingBook).Error; err != nil {
+				tx.Rollback()
+				c.JSON(500, gin.H{"error": "更新库存失败"})
+				return
+			}
+
+			if err := tx.Commit().Error; err != nil {
+				tx.Rollback()
+				c.JSON(500, gin.H{"error": "提交事务失败"})
+				return
+			}
 
 			c.JSON(200, gin.H{"message": "库存更新成功"})
 		})
@@ -225,6 +281,12 @@ func main() {
 		var order Order
 		if err := c.ShouldBindJSON(&order); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		// 验证订单数量
+		if order.Quantity <= 0 {
+			c.JSON(400, gin.H{"error": "订单数量必须为正数"})
 			return
 		}
 
@@ -254,6 +316,11 @@ func main() {
 
 		// 更新库存
 		book.Stock -= order.Quantity
+		if book.Stock < 0 { // 防止整数溢出
+			tx.Rollback()
+			c.JSON(400, gin.H{"error": "库存数量超出范围"})
+			return
+		}
 		if err := tx.Save(&book).Error; err != nil {
 			tx.Rollback()
 			c.JSON(500, gin.H{"error": "更新库存失败"})
